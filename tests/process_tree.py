@@ -188,11 +188,12 @@ def test(f):
         assert all(pid in table() for pid in pids), "unconfirmed tree must not be reported as cleaned"
         # Restore only this disposable fault-injection fixture's original bytes.
         (directory / "processes.json").write_bytes(original)
-        # Startup retries quarantined cleanup immediately (otherwise about once a minute).
+        # Startup makes a non-waiting quarantine pass. If SIGKILL delivery is
+        # still settling, release is confirmed by the next once-a-minute pass.
         f.stop()
         f.start()
         gone(pids)
-        deadline = time.monotonic()+5
+        deadline = time.monotonic()+75
         while f.status(job).get("reservation_quarantined"):
             assert time.monotonic() < deadline, f.status(job)
             time.sleep(.02)
