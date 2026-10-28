@@ -1,0 +1,42 @@
+{
+  "measured_at_utc": "2026-10-12T15:04:34.011140+00:00",
+  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "cpu_count": 18,
+  "physical_memory_bytes": 51539607552,
+  "release_binary_bytes": 3472272,
+  "monitor_interval_ms": 100,
+  "idle_daemon": {
+    "window_seconds": 3.0030269590206444,
+    "cpu_percent_one_core": 4.545413739626093e-05,
+    "rss_bytes": 3817472,
+    "footprint_bytes": 2048408,
+    "process_count": 1
+  },
+  "daemon_and_16_supervisors": {
+    "window_seconds": 3.0037193750031292,
+    "cpu_percent_one_core": 0.06696034978293885,
+    "rss_bytes": 42024960,
+    "footprint_bytes": 32152344,
+    "process_count": 17
+  },
+  "direct_spawn_to_exit": {
+    "count": 40,
+    "p50_ms": 7.588541542645544,
+    "p95_ms": 12.458291021175683
+  },
+  "8_concurrent_clients_admission": {
+    "count": 64,
+    "p50_ms": 357.98633354716003,
+    "p95_ms": 396.7658329056576
+  },
+  "queued_to_launch": {
+    "count": 64,
+    "p50_ms": 160.5,
+    "p95_ms": 267
+  },
+  "supervised_command_elapsed": {
+    "count": 64,
+    "p50_ms": 12.0,
+    "p95_ms": 21
+  }
+}

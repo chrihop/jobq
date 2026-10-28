@@ -1,0 +1,57 @@
+{
+  "measured_at_utc": "2026-10-12T15:41:24.849366+00:00",
+  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "cpu_count": 18,
+  "physical_memory_bytes": 51539607552,
+  "runners": 1,
+  "memory_cap_bytes": 201326592,
+  "default_job_memory_bytes": 67108864,
+  "monitor_interval_ms": 20,
+  "release_binary_bytes": 5679888,
+  "adapter_spawn_initialize_discover": {
+    "count": 20,
+    "p50_ms": 4.7478750348091125,
+    "p95_ms": 5.257915938273072
+  },
+  "idle_adapter": {
+    "window_seconds": 3.005031540989876,
+    "cpu_percent_one_core": 0.0,
+    "rss_bytes": 4898816,
+    "footprint_bytes": 2146736,
+    "process_count": 1
+  },
+  "eight_idle_adapters": {
+    "window_seconds": 3.0050479589262977,
+    "cpu_percent_one_core": 0.0,
+    "rss_bytes": 38912000,
+    "footprint_bytes": 16780504,
+    "process_count": 8
+  },
+  "idle_daemon_with_mcp_binary": {
+    "window_seconds": 3.0050259589916095,
+    "cpu_percent_one_core": 3.5307515292015565e-05,
+    "rss_bytes": 5275648,
+    "footprint_bytes": 1999256,
+    "process_count": 1
+  },
+  "sequential_mcp_queues": {
+    "count": 40,
+    "p50_ms": 0.10412500705569983,
+    "p95_ms": 0.20825001411139965
+  },
+  "sequential_socket_queues": {
+    "count": 40,
+    "p50_ms": 0.029937480576336384,
+    "p95_ms": 0.04333397373557091
+  },
+  "eight_concurrent_mcp_queues": {
+    "count": 80,
+    "p50_ms": 0.2991874935105443,
+    "p95_ms": 0.7929579587653279
+  },
+  "eight_concurrent_mcp_submissions": {
+    "count": 64,
+    "p50_ms": 64.9872919311747,
+    "p95_ms": 68.91937495674938
+  }
+}

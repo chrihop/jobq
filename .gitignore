@@ -1,0 +1,17 @@
+/target/
+/validation/
+/dist/
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+.env.*
+*.log
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.pem
+*.key
+/config.toml
+!/Cargo.lock

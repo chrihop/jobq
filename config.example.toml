@@ -1,0 +1,15 @@
+queues = ["1s", "5s", "10s", "20s", "60s", "300s", "600s"]
+default_timeout = "10s"
+default_max_memory = "4GiB"
+aging_after = "30s"
+monitor_interval = "100ms"
+log_cap = "16MiB"
+retention = "7days"
+max_pending = 10000
+
+# Defaults: logical CPU count and 75% of physical RAM.
+# runners = 8
+# memory_cap = "32GiB"
+
+[env]
+# OMP_NUM_THREADS = "1"
