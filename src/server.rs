@@ -47,8 +47,21 @@ pub struct Server {
     runners: HashMap<String, Runner>,
     maintenance: MaintenanceMode,
     scheduling: Value,
+    power: crate::power::PowerProfile,
 }
 impl Server {
+    fn update_power(&mut self) {
+        self.power.poll();
+        self.power.update(
+            self.cfg.performance_while_running,
+            self.cfg.performance_while_running
+                && (!self.runners.is_empty()
+                    || self
+                        .jobs
+                        .iter()
+                        .any(|j| j.active() || j.reservation_quarantined)),
+        );
+    }
     fn maintenance_status(&self) -> Value {
         let active = self.jobs.iter().filter(|j| j.active()).count();
         let queued = self.jobs.iter().filter(|j| j.queued()).count();
@@ -234,7 +247,7 @@ impl Server {
                     .map(|j| &j.id)
                     .collect();
                 Ok(
-                    json!({"snapshot_at_ms":self.now(),"config":self.cfg,"ordinary":queues,"maintenance":self.maintenance_status(),"scheduling":self.scheduling,"memory_metric":native::MEMORY_METRIC,
+                    json!({"snapshot_at_ms":self.now(),"config":self.cfg,"ordinary":queues,"maintenance":self.maintenance_status(),"scheduling":self.scheduling,"memory_metric":native::MEMORY_METRIC,"power_profile":self.power.status(self.cfg.performance_while_running),
                     "emergency":{"queued":self.jobs.iter().filter(|j|j.emergency&&j.queued()).count(),"running":self.jobs.iter().filter(|j|j.emergency&&j.active()).count(),"estimate":queue_estimate(&self.jobs,&estimates,|j|j.emergency)},
                     "active_runners":self.runners.len(),"reserved_memory_bytes":reserved,"quarantined_jobs":quarantined,
                     "free_admission_memory_bytes":self.cfg.memory_cap_bytes.saturating_sub(reserved)}),
@@ -288,6 +301,7 @@ impl Server {
                 self.jobs = jobs;
                 self.cfg = cfg;
                 self.cfg.warn();
+                self.update_power();
                 Ok(json!({"reloaded":true,"config":self.cfg}))
             }
             Request::Logs {
@@ -363,6 +377,7 @@ impl Server {
             j.state = "starting".into();
             self.store.save(&j)?;
             self.jobs[i] = j;
+            self.power.update(self.cfg.performance_while_running, true);
             if let Err(e) = self.launch(i) {
                 let mut j = self.jobs[i].clone();
                 let mut o = Outcome::interrupted(&format!("launch failed: {e:#}"));
@@ -858,6 +873,7 @@ pub fn run(
         runners: HashMap::new(),
         maintenance,
         scheduling: native::scheduling_diagnostics(),
+        power: Default::default(),
     };
     let stop = Arc::new(AtomicBool::new(false));
     for sig in [libc::SIGINT, libc::SIGTERM] {
@@ -880,6 +896,7 @@ pub fn run(
             }
         }
         s.reap()?;
+        s.power.poll();
         if stopping {
             if s.runners.is_empty() {
                 break;
@@ -1000,12 +1017,16 @@ pub fn run(
         if !stopping {
             s.dispatch()?;
         }
+        s.update_power();
         // Sleep in the kernel. Active-job sampling/deadlines happen in supervisors.
         let mut fds = vec![libc::pollfd {
             fd: if stopping { -1 } else { listener.as_raw_fd() },
             events: libc::POLLIN,
             revents: 0,
         }];
+        if let Some(fd) = s.power.pollfd() {
+            fds.push(fd);
+        }
         for p in &peers {
             fds.push(libc::pollfd {
                 fd: p.socket.as_raw_fd(),
@@ -1049,6 +1070,7 @@ mod maintenance_tests {
             runners: HashMap::new(),
             maintenance: MaintenanceMode::Running,
             scheduling: json!({}),
+            power: Default::default(),
         }
     }
     fn submit(dir: &Path, token: &str) -> Request {
@@ -1364,6 +1386,7 @@ mod recovery_tests {
             runners: HashMap::new(),
             maintenance: MaintenanceMode::Running,
             scheduling: json!({}),
+            power: Default::default(),
         };
         s.prune().unwrap();
         assert_eq!(s.jobs.len(), 1, "quarantined job must not be pruned");

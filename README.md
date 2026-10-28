@@ -485,6 +485,71 @@ Keep the default 100ms monitor interval unless a workload needs finer sampling;
 shorter intervals trade CPU for detection latency. Large process trees cost more
 to monitor. Use the benchmarks below for your workload and host.
 
+### Temporary Linux performance profile
+
+Opt in through the server TOML (before `[env]`), then `jobq reload`:
+
+```toml
+performance_while_running = true
+```
+
+Before launching the first job, jobq requests a temporary `performance` hold
+from `power-profiles-daemon` over system D-Bus. Concurrent jobs share one hold.
+It releases the connection after the last runner and cleanup reservation finish;
+queued-only or paused work does not hold performance. The power daemon then
+returns to its selected baseline or another application's remaining hold.
+This restores a previously selected `balanced` profile without hardcoding it.
+If the baseline was already `performance`, it stays `performance` when idle.
+
+The [HoldProfile API](https://upower.pages.freedesktop.org/power-profiles-daemon/gdbus-org.freedesktop.UPower.PowerProfiles.html)
+also releases the hold on disconnect, including a jobq SIGKILL/crash. A manual
+profile selection cancels the hold, and jobq respects it for the remainder of
+that busy period. Other applications' power-saver holds and thermal/firmware
+limits take precedence; this requests the highest supported profile, not a
+fixed clock speed or an override of hardware safeguards. Never run the jobq
+daemon as root merely to change power profiles.
+
+This is off by default and supported only on Linux with power-profiles-daemon
+(current UPower and legacy hadess D-Bus names). Missing services, unsupported
+performance profiles, permission denial, and service loss are diagnostic errors;
+jobs still run. Failed or externally released holds are retried on the next
+idle-to-busy transition, or after disabling and re-enabling the setting. Inspect
+`jobq queues`, `jobq --json queues`, or MCP `jobq_queues`: `power_profile` includes
+the hold state, last observed profile, degraded-performance reason, and last error.
+An acquired hold is not proof that performance is the effective profile.
+
+The optional feature adds one D-Bus connection while busy, no helper process or
+background thread, and no per-job shell commands. Signals share the server's
+existing `poll` loop. Profile method calls have 500ms timeouts and occur at the first
+launch in a busy period; connection establishment is handled by libdbus. Normal
+monitoring/deadlines remain in independent supervisors. Idle/disabled operation
+does not connect to D-Bus or poll power-profile properties.
+
+Desktop sessions may already have permission. SSH/service sessions may need an
+administrator to authorize the **hold-profile** Polkit action for the daemon's
+account. Copy [the rule template](scripts/jobq-power-profile.rules.example),
+replace `JOBQ_USER` with that account name, and install it as
+`/etc/polkit-1/rules.d/50-jobq-power-profile.rules`, owned by root with mode 0644.
+The rule authorizes temporary holds for that account, not only the jobq binary;
+an application ID is not an authentication boundary. It grants no general sudo
+access or direct governor/sysfs write access. Do not grant `switch-profile` just
+to enable this feature. Check permission with:
+
+```sh
+powerprofilesctl launch --profile performance --appid org.jobq.Jobq \
+  --reason 'jobq permission check' /bin/true
+powerprofilesctl list-holds
+```
+
+The test suite uses a private D-Bus and fake power service, never the machine's
+real profile. It checks baseline restoration, overlapping jobs, paused queues,
+manual changes, competing holds, reload, denial, SIGKILL, service loss and bus
+disconnect. On Linux with `dbus-daemon` and system Python/PyGObject installed:
+
+```sh
+/usr/bin/python3 tests/power.py target/release/jobq
+```
+
 On macOS, short-lived setuid helpers such as `/bin/ps` temporarily deny task queries.
 The monitor retries those queries for at most 100ms and uses public BSD process
 status to confirm protected zombies. A sustained denial is resolved through the

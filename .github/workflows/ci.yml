@@ -45,3 +45,9 @@ jobs:
         run: |
           python3 tests/linux.py target/release/jobq
           python3 tests/linux_performance.py target/release/jobq --workers 2 --rounds 1 --cpu-seconds 1
+      - name: Linux temporary power-profile integration
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y dbus-daemon python3-gi
+          /usr/bin/python3 tests/power.py target/release/jobq

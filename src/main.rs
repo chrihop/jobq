@@ -169,6 +169,16 @@ fn display(value: &serde_json::Value, json: bool) {
             value["reserved_memory_bytes"],
             value["config"]["memory_cap_bytes"]
         );
+        if value["power_profile"]["enabled"] == true {
+            let p = &value["power_profile"];
+            println!(
+                "power profile: {} (observed: {})",
+                p["state"], p["observed_profile"]
+            );
+            if let Some(error) = p["last_error"].as_str() {
+                println!("power profile warning: {error}");
+            }
+        }
         for q in rows {
             println!(
                 "{}ms: queued={} running={} accepting={}",

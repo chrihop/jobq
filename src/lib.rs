@@ -5,6 +5,7 @@ pub mod config;
 pub mod mcp;
 pub mod model;
 pub mod native;
+pub mod power;
 pub mod process_tree;
 pub mod scheduler;
 pub mod server;

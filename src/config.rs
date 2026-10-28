@@ -46,6 +46,7 @@ pub struct FileConfig {
     pub log_cap: String,
     pub retention: String,
     pub max_pending: usize,
+    pub performance_while_running: bool,
     pub env: BTreeMap<String, String>,
 }
 impl Default for FileConfig {
@@ -63,6 +64,7 @@ impl Default for FileConfig {
             log_cap: "16MiB".into(),
             retention: "7days".into(),
             max_pending: 10000,
+            performance_while_running: false,
             env: BTreeMap::new(),
         }
     }
@@ -80,6 +82,7 @@ pub struct Config {
     pub log_cap_bytes: u64,
     pub retention_ms: u64,
     pub max_pending: usize,
+    pub performance_while_running: bool,
     #[serde(skip_serializing)]
     pub env: BTreeMap<String, String>,
     pub cpu_count: usize,
@@ -140,6 +143,7 @@ impl Config {
             log_cap_bytes: bytes(&raw.log_cap)?,
             retention_ms: duration(&raw.retention)?,
             max_pending: raw.max_pending,
+            performance_while_running: raw.performance_while_running,
             env: raw.env,
             cpu_count,
             physical_memory_bytes,

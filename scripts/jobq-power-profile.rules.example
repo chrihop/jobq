@@ -1,0 +1,11 @@
+// Replace JOBQ_USER with the account running the jobq daemon before installing
+// as /etc/polkit-1/rules.d/50-jobq-power-profile.rules (root:root, mode 0644).
+// Authorizes temporary holds only, including SSH/service sessions. This grants
+// the named account the action; Polkit does not authenticate an application ID.
+polkit.addRule(function(action, subject) {
+    if (subject.user === "JOBQ_USER" &&
+        (action.id === "org.freedesktop.UPower.PowerProfiles.hold-profile" ||
+         action.id === "net.hadess.PowerProfiles.hold-profile")) {
+        return polkit.Result.YES;
+    }
+});

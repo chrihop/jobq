@@ -7,6 +7,10 @@ log_cap = "16MiB"
 retention = "7days"
 max_pending = 10000
 
+# Linux: temporary power-profiles-daemon performance hold while jobs execute.
+# Requires permission for the hold-profile Polkit action; off by default.
+# performance_while_running = true
+
 # Defaults: logical CPU count and 75% of physical RAM.
 # runners = 8
 # memory_cap = "32GiB"
