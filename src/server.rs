@@ -93,6 +93,7 @@ impl Server {
         let mut v = serde_json::to_value(j)?;
         v["snapshot_at_ms"] = json!(self.now());
         v["maintenance"] = self.maintenance_status();
+        v["memory_metric"] = json!(native::MEMORY_METRIC);
         v["elapsed_ms"] = json!(j
             .outcome
             .as_ref()
@@ -233,7 +234,7 @@ impl Server {
                     .map(|j| &j.id)
                     .collect();
                 Ok(
-                    json!({"snapshot_at_ms":self.now(),"config":self.cfg,"ordinary":queues,"maintenance":self.maintenance_status(),"scheduling":self.scheduling,
+                    json!({"snapshot_at_ms":self.now(),"config":self.cfg,"ordinary":queues,"maintenance":self.maintenance_status(),"scheduling":self.scheduling,"memory_metric":native::MEMORY_METRIC,
                     "emergency":{"queued":self.jobs.iter().filter(|j|j.emergency&&j.queued()).count(),"running":self.jobs.iter().filter(|j|j.emergency&&j.active()).count(),"estimate":queue_estimate(&self.jobs,&estimates,|j|j.emergency)},
                     "active_runners":self.runners.len(),"reserved_memory_bytes":reserved,"quarantined_jobs":quarantined,
                     "free_admission_memory_bytes":self.cfg.memory_cap_bytes.saturating_sub(reserved)}),
@@ -900,13 +901,7 @@ pub fn run(
                             drop(stream);
                             continue;
                         }
-                        let mut uid = 0;
-                        let mut gid = 0;
-                        ensure!(
-                            unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) }
-                                == 0,
-                            "read peer credentials"
-                        );
+                        let uid = native::peer_uid(stream.as_raw_fd())?;
                         if uid != unsafe { libc::geteuid() } {
                             continue;
                         }

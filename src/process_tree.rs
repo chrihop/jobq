@@ -29,7 +29,7 @@ const FREEZE_LIMIT: Duration = Duration::from_secs(2);
 /// Public identity facts captured at enrollment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Origin {
-    /// Wall-clock start (KERN_PROC_PID p_starttime) in microseconds.
+    /// Platform start time in microseconds (wall time on macOS, boot time on Linux).
     pub start_us: u64,
     /// Real uid at enrollment.
     pub uid: u32,
@@ -38,7 +38,7 @@ pub struct Origin {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Identity {
     pub pid: i32,
-    /// proc_pid_rusage start abstime.
+    /// Opaque platform start identity; on Linux this also incorporates boot identity.
     pub token: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<Origin>,
@@ -68,16 +68,27 @@ impl std::fmt::Display for Identity {
 /// Process queries and signals. `Native` is the real system; tests inject
 /// fixed answers to exercise reuse and permission cases deterministically.
 pub trait Host {
-    /// libproc usage with its bounded EPERM retry (see native::process_usage).
+    /// Platform resource/identity query (see native::process_usage).
     fn usage(&self, pid: i32) -> io::Result<ProcessUsage>;
-    /// Unprivileged KERN_PROC_PID view.
+    /// Public process origin and status.
     fn public(&self, pid: i32) -> io::Result<PublicProcess>;
     fn status(&self, pid: i32) -> io::Result<u32>;
     fn group_pids(&self, group: i32) -> Result<Vec<i32>>;
     fn child_pids(&self, parent: i32) -> Result<Vec<i32>>;
     fn parent_pid(&self, pid: i32) -> io::Result<i32>;
     fn signal(&self, pid: i32, signal: i32) -> io::Result<()>;
-    /// Latest wall start (us) a process with this start token can have.
+    fn signal_identity(&self, id: Identity, signal: i32) -> io::Result<()> {
+        self.signal(id.pid, signal)
+    }
+    fn adopted_pids(&self) -> Result<Vec<i32>> {
+        Ok(Vec::new())
+    }
+    /// Only a supervisor that adopts orphans can omit global group scans from
+    /// periodic sampling. Cleanup and recovery always perform the full census.
+    fn sample_by_children(&self) -> bool {
+        false
+    }
+    /// Latest platform start (us) a process with this start token can have.
     fn latest_start_us(&self, token: u64) -> Option<u64>;
     fn uid(&self) -> u32;
 }
@@ -110,6 +121,17 @@ impl Host for Native {
         } else {
             Ok(())
         }
+    }
+    #[cfg(target_os = "linux")]
+    fn signal_identity(&self, id: Identity, signal: i32) -> io::Result<()> {
+        native::signal_identity(id.pid, id.token, signal)
+    }
+    fn adopted_pids(&self) -> Result<Vec<i32>> {
+        native::adopted_pids()
+    }
+    #[cfg(target_os = "linux")]
+    fn sample_by_children(&self) -> bool {
+        native::adopts_orphans()
     }
     fn latest_start_us(&self, token: u64) -> Option<u64> {
         native::latest_start_us(token)
@@ -150,7 +172,7 @@ pub fn lookup(host: &impl Host, id: Identity) -> Result<Option<Found>> {
                 .with_context(|| format!("read tracked process {id}: {denied}; public lookup"))
         }
     };
-    if public.status == libc::SZOMB {
+    if public.status == native::PROCESS_ZOMBIE {
         return Ok(None);
     }
     match id.origin {
@@ -322,10 +344,14 @@ impl<H: Host> ProcessTree<H> {
     /// Census descendants of every retained, still-matching parent. Also retain
     /// the original group to cover already orphaned ordinary background children.
     pub fn refresh(&mut self) -> Result<()> {
+        self.refresh_with_group(true)
+    }
+
+    fn refresh_with_group(&mut self, include_group: bool) -> Result<()> {
         let mut changed = false;
         let root_matches =
             matches!(self.host.usage(self.root.pid), Ok(v) if v.token == self.root.token);
-        if self.root_exited || root_matches {
+        if include_group && (self.root_exited || root_matches) {
             for pid in self.host.group_pids(self.root.pid)? {
                 if self.root_exited && pid == self.root.pid {
                     continue;
@@ -338,6 +364,16 @@ impl<H: Host> ProcessTree<H> {
                         return Err(e).with_context(|| format!("read original group member {pid}"))
                     }
                 }
+            }
+        }
+        // Only a job's Linux subreaper returns adopted descendants. Recovery in
+        // the daemon and macOS return none, so helper processes cannot leak in.
+        for pid in self.host.adopted_pids()? {
+            match self.host.usage(pid) {
+                Ok(v) if v.live => changed |= self.enroll(pid, v.token),
+                Ok(_) => {}
+                Err(e) if e.raw_os_error() == Some(libc::ESRCH) => {}
+                Err(e) => return Err(e).context("read adopted descendant"),
             }
         }
         let mut pending = VecDeque::from(self.identities());
@@ -362,7 +398,7 @@ impl<H: Host> ProcessTree<H> {
                             .with_context(|| format!("read child {pid} of {}", parent.pid))
                     }
                 };
-                if !value.live || value.token < parent.token {
+                if !value.live {
                     continue;
                 }
                 match self.host.parent_pid(pid) {
@@ -389,7 +425,7 @@ impl<H: Host> ProcessTree<H> {
     }
 
     pub fn sample(&mut self) -> Result<(u64, u64, usize)> {
-        self.refresh()?;
+        self.refresh_with_group(!self.host.sample_by_children())?;
         let (mut rss, mut footprint, mut count) = (0u64, 0u64, 0usize);
         for identity in self.identities() {
             match lookup(&self.host, identity)? {
@@ -414,7 +450,7 @@ impl<H: Host> ProcessTree<H> {
         if lookup(&self.host, id)?.is_none() {
             return Ok(());
         }
-        match self.host.signal(id.pid, signal) {
+        match self.host.signal_identity(id, signal) {
             Ok(()) => Ok(()),
             Err(e) if e.raw_os_error() == Some(libc::ESRCH) => Ok(()),
             Err(e)
@@ -430,9 +466,12 @@ impl<H: Host> ProcessTree<H> {
     fn stopped_or_gone(&self, id: Identity) -> Result<bool> {
         match lookup(&self.host, id)? {
             None => Ok(true),
-            Some(Found::Unreadable { status }) => Ok(status == libc::SSTOP),
+            Some(Found::Unreadable { status }) => Ok(status == native::PROCESS_STOPPED),
             Some(Found::Readable(_)) => match self.host.status(id.pid) {
-                Ok(status) => Ok(matches!(status, libc::SSTOP | libc::SZOMB)),
+                Ok(status) => Ok(matches!(
+                    status,
+                    native::PROCESS_STOPPED | native::PROCESS_ZOMBIE
+                )),
                 Err(e) if e.raw_os_error() == Some(libc::ESRCH) => Ok(true),
                 Err(e) => Err(e).with_context(|| format!("read status of {id}")),
             },
@@ -529,6 +568,8 @@ pub mod fake {
         pub stopped: BTreeSet<i32>,
         pub signals: Vec<(i32, i32)>,
         pub latest_start_us: Option<u64>,
+        pub sample_by_children: bool,
+        pub group_censuses: usize,
     }
 
     pub const UID: u32 = 501;
@@ -562,9 +603,9 @@ pub mod fake {
         fn public(&self, pid: i32) -> io::Result<PublicProcess> {
             let state = self.0.borrow();
             let status = if state.stopped.contains(&pid) {
-                libc::SSTOP
+                native::PROCESS_STOPPED
             } else {
-                libc::SRUN
+                native::PROCESS_RUNNING
             };
             match state.procs.get(&pid) {
                 Some(Proc::Ours { start_us, .. }) => Ok(PublicProcess {
@@ -584,6 +625,7 @@ pub mod fake {
             self.public(pid).map(|p| p.status)
         }
         fn group_pids(&self, group: i32) -> Result<Vec<i32>> {
+            self.0.borrow_mut().group_censuses += 1;
             Ok(self
                 .0
                 .borrow()
@@ -592,6 +634,9 @@ pub mod fake {
                 .filter(|(_, p)| matches!(p, Proc::Ours { group: g, .. } if *g == group))
                 .map(|(pid, _)| *pid)
                 .collect())
+        }
+        fn sample_by_children(&self) -> bool {
+            self.0.borrow().sample_by_children
         }
         fn child_pids(&self, parent: i32) -> Result<Vec<i32>> {
             Ok(self
@@ -657,7 +702,7 @@ mod tests {
         }
     }
 
-    /// Root plus two enrolled descendants, as in job 6faba084.
+    /// Root plus two enrolled descendants.
     fn tree(host: &FakeHost, dir: &Path) -> ProcessTree<FakeHost> {
         host.insert(ROOT, ours(100, 1));
         host.insert(2789, ours(200, ROOT));
@@ -668,6 +713,25 @@ mod tests {
         assert_eq!(tree.members.len(), 3);
         assert!(tree.members.values().all(|m| m.origin.is_some()));
         tree
+    }
+
+    #[test]
+    fn child_sampling_retains_full_cleanup_census() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = FakeHost::default();
+        host.insert(ROOT, ours(100, 1));
+        host.insert(2789, ours(200, ROOT));
+        host.insert(2790, ours(300, 1));
+        host.0.borrow_mut().sample_by_children = true;
+        let root = enroll(&host, ROOT, 100);
+        let mut tree = ProcessTree::with_host(host.clone(), dir.path(), root).unwrap();
+        assert_eq!(tree.sample().unwrap().2, 2);
+        assert_eq!(host.0.borrow().group_censuses, 0);
+        // Cleanup must still discover an orphan omitted by a racing child list.
+        tree.kill().unwrap();
+        assert!(host.signals().contains(&(2790, libc::SIGKILL)));
+        assert!(host.0.borrow().group_censuses > 0);
+        assert!(!tree.has_live().unwrap());
     }
 
     #[test]
@@ -808,6 +872,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn native_public_view_matches_libproc_for_this_process() {
         let pid = std::process::id() as i32;

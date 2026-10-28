@@ -44,6 +44,7 @@ struct SubmitParams {
     /// Requested duration, e.g. 3s. The covering queue's rounded limit is the deadline.
     timeout: Option<String>,
     /// Declared memory cap/reservation, e.g. 2GiB; omitted uses the daemon default.
+    /// Enforcement samples tree physical footprint on macOS and tree RSS on Linux.
     max_memory: Option<String>,
     /// Use the emergency FIFO; aged heads may precede it. Does not preempt running jobs.
     #[serde(default)]
@@ -458,7 +459,7 @@ impl Adapter {
     }
 
     #[tool(
-        description = "Inspect FIFO queues, emergency queue, runner usage, memory reservations, queue completion estimates, maintenance and scheduling diagnostics. Check maintenance.admission_open before submitting and dispatch_open for held queued work. finish_accepted closes admission but continues accepted work. scheduling reports CPU topology and requested daemon QoS, not actual worker QoS or Super-core placement. Estimates assume no future arrivals or changes and are unavailable while dispatch is paused.",
+        description = "Inspect FIFO queues, emergency queue, runner usage, memory reservations, queue completion estimates, maintenance and scheduling diagnostics. Check maintenance.admission_open before submitting and dispatch_open for held queued work. finish_accepted closes admission but continues accepted work. memory_metric identifies sampled tree physical_footprint on macOS or rss on Linux. scheduling reports platform diagnostics; macOS QoS is requested policy, not proof of worker QoS or core placement. Estimates assume no future arrivals or changes and are unavailable while dispatch is paused.",
         annotations(read_only_hint = true)
     )]
     async fn jobq_queues(&self, Parameters(_): Parameters<EmptyParams>) -> CallToolResult {

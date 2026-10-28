@@ -1,13 +1,13 @@
 # jobq contributor guide
 
-jobq is a general-purpose macOS job scheduler for cooperating AI agents.
+jobq is a general-purpose macOS and Linux job scheduler for cooperating AI agents.
 Keep examples and fixtures self-contained. Do not add personal paths, internal
 project names, real job records, exported environments, or private test output.
 Use synthetic subprocesses for integration tests.
 
 Build with `cargo build --release --locked`; run `cargo test --locked` and
 `cargo clippy --locked --all-targets -- -D warnings`. Native daemon tests require
-exclusive use of the account's singleton: run them on a disposable macOS runner
+exclusive use of the account's singleton: run them on a disposable runner
 or a separate user account. Never interrupt unrelated jobs to obtain the lock.
 See the README for live-safe checks and maintenance procedures.
 

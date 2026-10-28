@@ -6,6 +6,7 @@ existing daemon, with explicit limits, and tests CLI/MCP interoperability.
 Add --long with --live to verify a >30s blocking set wait and CLI interruption.
 """
 import json
+import os
 import pathlib
 import socketserver
 import subprocess
@@ -160,7 +161,8 @@ def mock_tests():
 
 def live_tests():
     # Never drain, restart or cancel any job outside this test's owned IDs.
-    c=McpClient('/tmp/jobq-'+str(__import__('os').getuid())+'/socket');owned=[]
+    socket_path=os.environ.get('JOBQ_TEST_SOCKET','/tmp/jobq-'+str(os.getuid())+'/socket')
+    c=McpClient(socket_path);owned=[]
     try:
         q=c.call('jobq_queues')
         assert q.get('maintenance',{}).get('admission_open',True),'maintenance: do not bypass'
@@ -175,13 +177,13 @@ def live_tests():
         # Adapter death drops only the waiter. Reattach through a fresh adapter.
         j=c.submit('/tmp',['/bin/sleep','1'],timeout='5s',max_memory='32MiB');owned.append(j['id'])
         c.begin('tools/call',dict(name='jobq_wait_many',arguments=dict(ids=[j['id']],mode='all',block=True)))
-        c.close(kill=True);c=McpClient('/tmp/jobq-'+str(__import__('os').getuid())+'/socket')
+        c.close(kill=True);c=McpClient(socket_path)
         v=c.decode(c.request('tools/call',dict(name='jobq_wait_many',arguments=dict(ids=[j['id']],mode='all',block=True)),timeout=60))
         assert v['jobs'][0]['state']=='succeeded' and not v['jobs'][0]['cancellation_requested']
         if '--long' in sys.argv:
             j=c.submit('/tmp',['/bin/sleep','35'],timeout='60s',max_memory='32MiB');owned.append(j['id'])
             _,future=c.begin('tools/call',dict(name='jobq_wait_many',arguments=dict(ids=[j['id']],mode='all',block=True)))
-            process=subprocess.Popen([str(BIN),'--json','wait','--all',j['id']],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            process=subprocess.Popen([str(BIN),'--socket',socket_path,'--json','wait','--all',j['id']],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             try:
                 time.sleep(31)
                 assert not future.done() and process.poll() is None

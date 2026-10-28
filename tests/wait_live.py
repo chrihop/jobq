@@ -20,7 +20,8 @@ from smoke import BIN
 def main():
     root = Path(sys.argv[2]).resolve()
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
-    client = McpClient(f"/tmp/jobq-{os.getuid()}/socket")
+    socket_path = os.environ.get("JOBQ_TEST_SOCKET", f"/tmp/jobq-{os.getuid()}/socket")
+    client = McpClient(socket_path)
     jobs, records, processes = [], [], []
 
     def record(name, value):
@@ -45,7 +46,7 @@ def main():
         return value
 
     def cli(*args):
-        p = subprocess.Popen([str(BIN), "--json", *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p = subprocess.Popen([str(BIN), "--socket", socket_path, "--json", *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         processes.append(p)
         return p
 
@@ -98,7 +99,7 @@ def main():
 
         # Disconnect a waiting adapter; another adapter can finish waiting.
         id = submit(["/bin/sleep", "2"])
-        other = McpClient(f"/tmp/jobq-{os.getuid()}/socket")
+        other = McpClient(socket_path)
         other.begin("tools/call", dict(name="jobq_wait", arguments=dict(id=id, block=True)))
         other.close(kill=True)
         finish(begin(id)[1], "succeeded")

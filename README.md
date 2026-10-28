@@ -1,21 +1,23 @@
 # jobq
 
-Durable, resource-aware FIFO job queues for cooperating AI agents on **macOS**.
+Durable, resource-aware FIFO job queues for cooperating AI agents on **macOS and Linux**.
 Let multiple agents share one computer without launching every heavy command
 at once. Jobs wait in durable FIFO queues until runner slots and declared memory
 reservations are available. Agents can submit work, inspect results, stream logs,
 wait for one or many jobs, and cancel their work through the CLI or MCP.
 
 One Rust executable provides the daemon, CLI client, and MCP stdio adapter.
-Version 0.1 targets macOS and cooperating agents under one user account.
-Linux and Windows are not supported. See [LICENSE](LICENSE) for the MIT license.
+Supports macOS and Linux (Linux tested on amd64), with cooperating agents under one
+user account. Windows is not supported. See [LICENSE](LICENSE) for the MIT license.
 
 ## Build and start
 
-Requires macOS, a stable Rust toolchain, and Xcode Command Line Tools. The
-integration scripts additionally need Python 3.11 or later. GitHub Actions runs
-the unit, lint, release-build and native integration checks on a clean macOS
-runner; local checks must respect any existing daemon and jobs.
+Requires a stable Rust toolchain and a C compiler: Xcode Command Line Tools on
+macOS, or a standard Linux build toolchain. Linux needs kernel 5.3+ with pidfd
+syscalls permitted and procfs mounted with access to the job processes. The
+integration scripts need Python 3.11 or later. GitHub Actions runs the unit, lint,
+release-build and native integration checks on clean macOS and Linux runners;
+local checks must respect any existing daemon and jobs.
 
 ```sh
 git clone https://github.com/chrihop/jobq.git
@@ -26,11 +28,13 @@ cargo build --release --locked
 
 Run the server in its own terminal. Omitting `--config` uses built-in defaults;
 an explicitly supplied configuration must exist. The default state directory is
-`~/Library/Application Support/jobq`; `server --state-dir PATH` changes it.
+`~/Library/Application Support/jobq` on macOS; on Linux it is
+`$XDG_STATE_HOME/jobq` (absolute values only), falling back to
+`~/.local/state/jobq`. `server --state-dir PATH` changes it.
 SIGINT/SIGTERM stop admission, interrupt active jobs, clean up their tracked trees, and
 leave waiting jobs durable for the next start. No background service is installed.
 
-All submitting agents must run under the daemon's macOS account. The fixed lock
+All submitting agents must run under the daemon's user account. The fixed lock
 `/tmp/jobq-<uid>/daemon.lock` prevents a second daemon even with different socket,
 state, or config paths. Never delete a live lock file. The default socket is
 `/tmp/jobq-<uid>/socket`; global `--socket PATH` selects another endpoint without
@@ -367,9 +371,9 @@ supported. Monitoring intervals must be at most one second.
 
 Requested time selects the smallest covering bucket: `0.5s → 1s`, `2s → 5s`,
 `22s → 60s`. **The bucket limit is the actual execution deadline.** Queue waiting
-does not consume it. Deadlines and `elapsed_ms` use `CLOCK_MONOTONIC`, which
-keeps counting while the Mac sleeps, so a job running across a sleep can time out
-on wake. All `*_at_ms` timestamps are Unix wall-clock milliseconds. Requests above the largest bucket and job memory caps above
+does not consume it. Deadlines and `elapsed_ms` include system suspend, using
+`CLOCK_MONOTONIC` on macOS and `CLOCK_BOOTTIME` on Linux; a job spanning a system
+sleep can time out on wake. All `*_at_ms` timestamps are Unix wall-clock milliseconds. Requests above the largest bucket and job memory caps above
 the admission budget are rejected. Runners above CPU count or a budget above
 physical RAM produce warnings and are accepted.
 
@@ -412,23 +416,76 @@ daemon and command identities are persisted before user code can run. A private
 pipe reports daemon death and cancellation. Helpers use native polling, not
 repeated `ps`/`time` subprocesses. Deadlines are independent of daemon database
 work. stdout/stderr draining is bounded per iteration so output floods cannot
-monopolize the monitor loop. Descendants are discovered through libproc parent
-relationships as well as the original group. Their kernel start identities are
+monopolize the monitor loop. Descendants are discovered through parent
+relationships and the original group, using libproc on macOS and procfs on Linux.
+Their kernel start identities are
 retained across `setsid`, group changes and reparenting, and persisted for crash
 recovery. Cancellation freezes the observed tree, confirms suspension, discovers
 remaining children and kills only matching identities. Reservations stay held
 until all tracked live descendants are gone. Normal command exit also cleans up
 observed background descendants, including detached wrapper guardians.
 
-The memory limit is the **sum of tracked process-tree physical footprints**, sampled
-through Apple's libproc. Current and peak sampled RSS/footprint are reported
-separately. RSS may count shared pages repeatedly. Samples can miss brief spikes.
+The memory limit is sampled over the tracked process tree. macOS uses summed
+**physical footprint** from libproc; Linux uses summed **resident set size (RSS)**
+from `/proc/<pid>/stat`. The `memory_metric` field in status/queues identifies
+`physical_footprint` or `rss`. For wire compatibility Linux also places RSS in the
+existing `footprint_bytes`/`peak_sampled_footprint_bytes` fields; these are **not**
+Apple physical footprint or proportional set size. RSS can count shared pages
+repeatedly and excludes swapped-out pages. Samples can miss brief spikes.
 An observed detached descendant remains included, but a process that forks and
 reparents entirely between censuses can still escape discovery. This is cooperative
 workload management, not a strict sandbox or kernel-enforced memory ceiling.
 Scheduling delays and machine sleep can delay observations and cleanup.
 
-Short-lived setuid helpers such as macOS `/bin/ps` temporarily deny task queries.
+Linux supervisors are child subreapers: double-forked orphans are adopted and
+reaped by their job's supervisor. Child enumeration includes every thread's
+procfs children list. pidfds provide root-exit notification and identity-bound
+signals, with a start-token check before signalling. Tokens incorporate the
+kernel boot ID, preventing stale recovery after reboot from matching a new
+process. Linux process origins use boot-relative microseconds; macOS origins
+use wall time. State directories and process journals belong to their original
+host/OS and must not be migrated to another live host as runnable state.
+
+During periodic Linux sampling, supervisors traverse their own children and
+adopted orphans instead of scanning every process on the host. Cleanup and crash
+recovery retain full process-group censuses and identity checks. Child lists can
+race with exiting children, so samples remain approximate; cleanup freezes the
+observed tree and repeats discovery (see the Linux [subreaper](https://man7.org/linux/man-pages/man2/PR_SET_CHILD_SUBREAPER.2const.html)
+and [child-list](https://man7.org/linux/man-pages/man5/proc_tid_children.5.html) documentation).
+This avoids a host-wide scan per runner per
+tick without removing the conservative cleanup checks.
+
+Linux monitoring is cooperative procfs sampling, not cgroup isolation. The
+default memory budget is based on physical host RAM, **not a container's cgroup
+limit**; set `memory_cap` explicitly within any container/systemd memory limit.
+Procfs permission restrictions or blocked pidfd syscalls produce explicit errors,
+not zero-memory samples. Kernel uninterruptible sleep can delay termination and
+cause cleanup quarantine. Use a normal same-user session with procfs and pidfds
+available; do not treat this scheduler as a sandbox for untrusted programs.
+
+### Linux CPU capacity
+
+jobq imposes no CPU quota, affinity mask, niceness adjustment, or background
+scheduling policy. Commands inherit the daemon's Linux scheduling constraints,
+including any cgroup limits or service-manager configuration. Start the daemon
+in the intended unrestricted CPU context; jobq does not bypass administrator
+limits or elevate jobs to real-time priority. The Linux regression suite compares
+direct and queued affinity, nice, scheduling policy, and cgroup membership.
+
+To fill the CPUs, provide enough runnable work: one runner admits one job, and
+a single-threaded job uses at most one logical CPU. Use sufficient runners for
+independent jobs, or the workload's supported internal parallelism. Avoid
+oversubscribing many internally parallel jobs. Memory admission still applies:
+the default 4GiB reservation may admit only a few jobs even with free runners.
+Set realistic measured per-job memory caps, with headroom, so those reservations
+do not unnecessarily prevent safe concurrency. Do not understate memory needs.
+
+Monitoring, process launch, log capture, and durable database writes have costs.
+Keep the default 100ms monitor interval unless a workload needs finer sampling;
+shorter intervals trade CPU for detection latency. Large process trees cost more
+to monitor. Use the benchmarks below for your workload and host.
+
+On macOS, short-lived setuid helpers such as `/bin/ps` temporarily deny task queries.
 The monitor retries those queries for at most 100ms and uses public BSD process
 status to confirm protected zombies. A sustained denial is resolved through the
 unprivileged `KERN_PROC_PID` view: each tracked identity records its wall-clock
@@ -446,7 +503,7 @@ accounted to the waited command, not necessarily every orphaned descendant.
 Sampled tree peaks are not exact lifetime peaks. Live statistics are reported
 at most twice per second; `sampled_at_ms` shows freshness.
 
-SQLite uses WAL, `synchronous=FULL`, and macOS full-fsync. Acceptance is committed
+SQLite uses WAL and `synchronous=FULL`, plus full-fsync on macOS. Acceptance is committed
 before acknowledgment. Contexts live on disk rather than in the queue's memory
 records. Supervisors atomically write final results before exiting. Restart first
 waits for old supervisors to clean up, recovers durable results, marks ambiguous
@@ -566,8 +623,15 @@ python3 tests/process_tree.py
 python3 tests/maintenance.py
 python3 tests/legacy_gate.py
 python3 tests/wait_many.py target/release/jobq
+python3 tests/waits.py target/release/jobq
+# Linux only: adoption, multithreaded children, RSS/accounting
+python3 tests/linux.py target/release/jobq
 python3 tests/benchmark.py > benchmark-results.json
 python3 tests/mcp_benchmark.py > mcp-benchmark-results.json
+# Linux CPU throughput versus bracketing direct controls (exclusive daemon):
+python3 tests/linux_performance.py target/release/jobq > cpu-results.json
+# Longer CPU/memory samples; PSS/private bytes are Linux benchmark-only fields:
+JOBQ_BENCHMARK_SECONDS=15 python3 tests/benchmark.py > overhead-results.json
 ```
 
 If a minimal shell exposes `cargo`/`rustc` but cannot find `rustdoc` or Clippy,
@@ -577,9 +641,9 @@ add the active toolchain utilities to that shell's PATH first:
 export PATH="$(rustc --print sysroot)/bin:$PATH"
 ```
 
-The `smoke`, `mcp`, `process_tree`, `maintenance`, and benchmark scripts require
+The `smoke`, `mcp`, `process_tree`, `maintenance`, `waits`, `linux`, and benchmark scripts require
 no other daemon for this account. Never stop a busy daemon just to run them.
-Use a separate macOS user or a disposable CI runner when necessary. They use temporary state
+Use a separate user account or a disposable CI runner when necessary. They use temporary state
 and sockets, and stop their own daemon. The smoke suite executes real processes:
 argument/env/cwd inheritance, shell pipelines, routing, timeout, child memory,
 output flooding, multi-runner reservations, singleton, withdrawal, duplicate and
@@ -602,7 +666,68 @@ UTF-8/log truncation, adapter death, and a live adapter across daemon restart.
 Unit tests additionally simulate lost responses and blocked daemon I/O. The
 native suites and benchmarks must run sequentially because of the fixed lock.
 
-Pre-MCP release snapshot measured on 2026-10-12 at 23:04 UTC+8, on macOS 27.0.1 arm64
+The `waits` suite starts its own temporary daemon and runs single-job and set-wait
+checks over real CLI/MCP connections, including waits longer than 30 seconds,
+concurrent status/cancel calls, mixed outcomes, and waiter interruption. It takes
+about 90 seconds. The Linux suite additionally checks immediate double-fork
+adoption and reaping, children spawned from non-leader threads, byte-valued
+process names, and `wait4` maximum-RSS unit conversion.
+
+### Linux amd64 measurements
+
+Measured on 2026-10-28 with Linux 7.0.0, glibc 2.39, 24 logical CPUs and
+29.02GiB host RAM, using a release build. The daemon benchmark uses 100ms
+monitoring; the MCP fixture uses 20ms monitoring, one runner and a 192MiB budget.
+Both use synthetic jobs. The optimized daemon measurements below use 15-second
+CPU/memory windows; adapter measurements use three seconds. Run the benchmark
+commands above to reproduce.
+
+| Measurement | Result |
+| --- | --- |
+| Idle daemon RSS | 7.50MiB |
+| Daemon + 16 supervisors RSS / CPU | 98.93MiB / 1.47% of one core |
+| Daemon + 16 supervisors proportional / private memory | 12.10MiB / 7.89MiB |
+| Direct spawn through exit, p50 / p95 | 0.218ms / 0.527ms |
+| Eight concurrent socket clients, admission p50 / p95 | 52.03ms / 57.43ms |
+| Queued to launch, p50 / p95 | 18.5ms / 28ms |
+| MCP adapter launch + initialization + discovery, p50 / p95 | 1.07ms / 1.72ms |
+| One idle MCP adapter RSS / proportional / private memory | 6.10MiB / 0.91MiB / 0.46MiB |
+| Eight concurrent MCP queue callers, p50 / p95 | 0.561ms / 1.717ms |
+| Eight concurrent MCP submit callers, admission p50 / p95 | 5.78ms / 9.88ms |
+
+Removing per-tick host-wide scans reduced active monitoring CPU from 32.40% to
+1.47% of one core in paired 15-second samples (about 95% lower). The remaining
+cost is about 0.061% of this host's 24-logical-CPU capacity. Cleanup and recovery
+still perform full censuses. No idle daemon/adapter CPU ticks were observed in
+their sample windows; accounting resolution does not establish zero overhead.
+
+Summed RSS counts shared pages repeatedly. Proportional memory (PSS) apportions
+shared pages; private memory sums private clean/dirty pages. The benchmark reads
+`smaps_rollup` to report these figures; job monitoring does not read smaps or pay
+that cost. The measurements cover jobq's daemon and supervisors, excluding job
+memory. The socket and MCP benchmarks have different runner counts and host
+load; their admission numbers are not a transport comparison. These are
+single-host observations, not performance guarantees or comparisons of Linux
+and macOS efficiency. Sample sizes match the benchmark descriptions below.
+
+Separate CPU tests used 24 native integer workers, identical fixed work and
+checksums within each batch, 32MiB reservations, and five queued batches, each
+bracketed by direct execution. Median queued/direct wall time was **1.002×**
+(individual ratios 0.977–1.092×), including admission and cleanup. This shows
+near-baseline median throughput in these observations, not zero overhead or a
+latency bound. Unrelated compilation was observed on the shared host during
+this session, and the slower run is retained in the range.
+
+Workers retained all 24 CPUs, nice 0 and `SCHED_OTHER`. In the final two-second
+steady sample, queued workers consumed **22.98 CPU cores (95.75% of 24)**, versus
+22.99 cores (95.78%) in the preceding direct control. Host-busy accounting showed
+about one other core in use in both samples and approximately 100% total host
+CPU utilization. Whole-batch utilization is lower because it includes launch
+and completion tails. Reproduce with `tests/linux_performance.py`; it reports
+steady and whole-batch CPU use plus other host activity. It never changes CPU
+affinity, nice, cgroups, or other users' workloads to improve the result.
+
+Historical macOS pre-MCP release snapshot measured on 2026-10-12 at 23:04 UTC+8, on macOS 27.0.1 arm64
 with 18 logical CPUs and 48GiB RAM (100ms sampling):
 
 | Measurement | Result |

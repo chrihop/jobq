@@ -1,4 +1,4 @@
-name: macOS checks
+name: Platform checks
 on:
   push:
   pull_request:
@@ -10,7 +10,11 @@ concurrency:
   cancel-in-progress: true
 jobs:
   test:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     env:
       PYTHONDONTWRITEBYTECODE: '1'
@@ -35,3 +39,9 @@ jobs:
           python3 tests/maintenance.py target/release/jobq
           python3 tests/legacy_gate.py
           python3 tests/wait_many.py target/release/jobq
+          python3 tests/waits.py target/release/jobq
+      - name: Linux-specific integration tests
+        if: runner.os == 'Linux'
+        run: |
+          python3 tests/linux.py target/release/jobq
+          python3 tests/linux_performance.py target/release/jobq --workers 2 --rounds 1 --cpu-seconds 1

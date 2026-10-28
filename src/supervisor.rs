@@ -49,6 +49,7 @@ impl Output {
 }
 
 pub fn run(dir: &Path) -> Result<()> {
+    native::initialize_supervisor()?;
     let spec: RunSpec = serde_json::from_slice(&std::fs::read(dir.join("spec.json"))?)?;
     // Parent persists our identity before opening the launch gate. EOF before G means no launch.
     let mut gate = [0u8; 1];
@@ -176,6 +177,7 @@ impl<H: Host> GroupGuard<H> {
             let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
             let rc = unsafe { libc::wait4(self.pid, &mut status, libc::WNOHANG, &mut usage) };
             if rc == self.pid {
+                native::reap_adopted();
                 return Ok(Reaped { status, usage });
             }
             if rc < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
@@ -187,7 +189,7 @@ impl<H: Host> GroupGuard<H> {
             }
             if Instant::now() >= deadline {
                 return Err(format!(
-                    "command process {} did not exit after SIGKILL; left to launchd",
+                    "command process {} did not exit after SIGKILL; left to the system reaper",
                     self.pid
                 ));
             }
@@ -229,7 +231,7 @@ fn failure_outcome(
             o.signal = libc::WIFSIGNALED(r.status).then(|| libc::WTERMSIG(r.status));
             o.command_user_cpu_seconds = cpu_seconds(r.usage.ru_utime);
             o.command_system_cpu_seconds = cpu_seconds(r.usage.ru_stime);
-            o.command_max_rss_bytes = r.usage.ru_maxrss as u64;
+            o.command_max_rss_bytes = native::max_rss_bytes(r.usage.ru_maxrss);
         }
         Err(reason) => message.push_str(&format!("; {reason}")),
     }
@@ -373,7 +375,7 @@ fn execute(dir: &Path, spec: &RunSpec) -> Result<Outcome> {
         elapsed_ms: elapsed.as_millis() as u64,
         command_user_cpu_seconds: cpu_seconds(usage.ru_utime),
         command_system_cpu_seconds: cpu_seconds(usage.ru_stime),
-        command_max_rss_bytes: usage.ru_maxrss as u64,
+        command_max_rss_bytes: native::max_rss_bytes(usage.ru_maxrss),
         stdout_truncated: out.truncated,
         stderr_truncated: err.truncated,
         stats,
@@ -485,7 +487,10 @@ fn monitor(
                     if footprint > spec.memory_bytes {
                         reason.get_or_insert((
                             "memory_exceeded".into(),
-                            "sampled process tree physical footprint exceeded cap".into(),
+                            format!(
+                                "sampled process tree {} exceeded cap",
+                                native::MEMORY_METRIC
+                            ),
                         ));
                     }
                 }

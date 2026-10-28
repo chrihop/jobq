@@ -1,5 +1,5 @@
-#[cfg(not(target_os = "macos"))]
-compile_error!("jobq v1 requires macOS; Linux resource enforcement is not implemented");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("jobq requires macOS or Linux");
 
 use anyhow::{ensure, Context as _, Result};
 use base64::Engine;
@@ -8,7 +8,7 @@ use jobq::{client, config, model::*, native};
 use std::{collections::BTreeMap, io::Write, path::PathBuf};
 
 #[derive(Parser)]
-#[command(version, about = "Durable local job queues for AI agents on macOS")]
+#[command(version, about = "Durable local job queues for AI agents")]
 struct Cli {
     #[arg(long, global = true)]
     json: bool,

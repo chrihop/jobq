@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real macOS subprocess/API tests. Uses temporary state; never touches production jobs.
+"""Real Unix subprocess/API tests. Uses temporary state; never touches production jobs.
 Requires no existing jobq daemon for this account (the singleton is intentional).
 Run: python3 tests/smoke.py [target/release/jobq]
 """

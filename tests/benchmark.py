@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Short native overhead measurements; uses the same isolated fixture as smoke.py."""
 import concurrent.futures
-import ctypes
 import datetime
 import json
+import os
 import platform
 import sqlite3
 import statistics
@@ -11,30 +11,27 @@ import subprocess
 import time
 from smoke import BIN, Fixture
 
-lib = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+from resource_usage import usage, MEMORY_METRIC
 
 
-class Usage(ctypes.Structure):
-    _fields_ = [('uuid', ctypes.c_ubyte * 16)] + [(name, ctypes.c_uint64) for name in
-        ['user', 'system', 'idle', 'interrupt', 'pageins', 'wired', 'resident', 'footprint', 'start', 'exit']]
+SAMPLE_SECONDS = float(os.environ.get("JOBQ_BENCHMARK_SECONDS", "3"))
+assert 1 <= SAMPLE_SECONDS <= 60
 
 
-def usage(pid):
-    value = Usage()
-    assert lib.proc_pid_rusage(pid, 0, ctypes.byref(value)) == 0
-    return value
-
-
-def sample(pids, seconds=3):
+def sample(pids, seconds=SAMPLE_SECONDS):
     before = [usage(pid) for pid in pids]
     start = time.monotonic()
     time.sleep(seconds)
     after = [usage(pid) for pid in pids]
     elapsed = time.monotonic() - start
     cpu = sum((b.user+b.system)-(a.user+a.system) for a, b in zip(before, after)) / 1e9
-    return dict(window_seconds=elapsed, cpu_percent_one_core=cpu/elapsed*100,
+    result = dict(window_seconds=elapsed, cpu_percent_one_core=cpu/elapsed*100,
                 rss_bytes=sum(v.resident for v in after), footprint_bytes=sum(v.footprint for v in after),
                 process_count=len(pids))
+    if all(hasattr(v, "pss") for v in after):
+        result.update(pss_bytes=sum(v.pss for v in after),
+                      private_bytes=sum(v.private for v in after))
+    return result
 
 
 def distribution(values):
@@ -44,16 +41,18 @@ def distribution(values):
 
 f = Fixture()
 try:
-    f.configure(runners=16, cap="2GiB", aging="30s")
+    f.configure(runners=16, cap="2GiB", aging="30s",
+                queues='["150ms", "500ms", "2s", "10s", "60s", "300s"]')
     f.config.write_text(f.config.read_text().replace('"20ms"', '"100ms"'))
     f.rpc("reload")
     result = dict(measured_at_utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                  platform=platform.platform(), cpu_count=f.rpc("queues")["config"]["cpu_count"],
+                  platform=platform.platform(), memory_metric=MEMORY_METRIC, cpu_count=f.rpc("queues")["config"]["cpu_count"],
                   physical_memory_bytes=f.rpc("queues")["config"]["physical_memory_bytes"],
                   release_binary_bytes=BIN.stat().st_size, monitor_interval_ms=100)
     result['idle_daemon'] = sample([f.process.pid])
 
-    jobs = [f.submit(["/bin/sleep", "8"], timeout=10000) for _ in range(16)]
+    jobs = [f.submit(["/bin/sleep", str(SAMPLE_SECONDS + 5)],
+                     timeout=int((SAMPLE_SECONDS + 7) * 1000)) for _ in range(16)]
     for job in jobs:
         f.wait(job, "running")
     with sqlite3.connect(f.state / "jobs.sqlite") as conn:

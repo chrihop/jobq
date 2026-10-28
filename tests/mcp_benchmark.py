@@ -3,7 +3,6 @@
 Run: python3 tests/mcp_benchmark.py [target/release/jobq] > mcp-benchmark-results.json
 """
 import concurrent.futures
-import ctypes
 import datetime
 import json
 import platform
@@ -12,18 +11,7 @@ import time
 from mcp import McpClient
 from smoke import BIN, Fixture
 
-lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
-
-
-class Usage(ctypes.Structure):
-    _fields_ = [("uuid", ctypes.c_ubyte * 16)] + [(name, ctypes.c_uint64) for name in
-        ["user", "system", "idle", "interrupt", "pageins", "wired", "resident", "footprint", "start", "exit"]]
-
-
-def usage(pid):
-    value = Usage()
-    assert lib.proc_pid_rusage(pid, 0, ctypes.byref(value)) == 0
-    return value
+from resource_usage import usage, MEMORY_METRIC
 
 
 def sample(pids, seconds=3):
@@ -33,9 +21,13 @@ def sample(pids, seconds=3):
     after = [usage(pid) for pid in pids]
     elapsed = time.monotonic()-start
     cpu = sum((b.user+b.system)-(a.user+a.system) for a, b in zip(before, after)) / 1e9
-    return dict(window_seconds=elapsed, cpu_percent_one_core=cpu/elapsed*100,
+    result = dict(window_seconds=elapsed, cpu_percent_one_core=cpu/elapsed*100,
                 rss_bytes=sum(v.resident for v in after), footprint_bytes=sum(v.footprint for v in after),
                 process_count=len(pids))
+    if all(hasattr(v, "pss") for v in after):
+        result.update(pss_bytes=sum(v.pss for v in after),
+                      private_bytes=sum(v.private for v in after))
+    return result
 
 
 def distribution(values):
@@ -46,7 +38,7 @@ def distribution(values):
 def run(f):
     config = f.rpc("queues")["config"]
     result = dict(measured_at_utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                  platform=platform.platform(), cpu_count=config["cpu_count"],
+                  platform=platform.platform(), memory_metric=MEMORY_METRIC, cpu_count=config["cpu_count"],
                   physical_memory_bytes=config["physical_memory_bytes"],
                   runners=config["runners"], memory_cap_bytes=config["memory_cap_bytes"],
                   default_job_memory_bytes=config["default_memory_bytes"],
