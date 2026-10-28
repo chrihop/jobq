@@ -60,7 +60,7 @@ impl Store {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, Option<i32>>(1)?,
-                r.get::<_, Option<u64>>(2)?,
+                r.get::<_, Option<i64>>(2)?.map(|bits| bits as u64),
             ))
         })?;
         rows.map(|r| {
@@ -98,7 +98,9 @@ impl Store {
             params![
                 serde_json::to_string(j)?,
                 j.helper_pid,
-                j.helper_token,
+                // SQLite INTEGER is signed. Preserve the opaque identity's
+                // full 64-bit representation, including boot hashes with bit 63.
+                j.helper_token.map(|bits| bits as i64),
                 j.id
             ],
         )?;
@@ -194,6 +196,11 @@ mod tests {
         assert_eq!(store.token("token").unwrap().as_deref(), Some("first"));
         assert_eq!(store.context("first").unwrap().env["EXPORTED"], "original");
         assert_eq!(store.jobs().unwrap()[0].helper_token, Some(456));
+        for token in [0, i64::MAX as u64, (i64::MAX as u64) + 1, u64::MAX] {
+            first.helper_token = Some(token);
+            store.save(&first).unwrap();
+            assert_eq!(store.jobs().unwrap()[0].helper_token, Some(token));
+        }
     }
     #[test]
     fn redaction_leaves_no_secret_bytes_in_database_or_wal() {

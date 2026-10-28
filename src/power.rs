@@ -11,29 +11,6 @@ pub struct PowerProfile {
     hold: Option<linux::Hold>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn disabled_and_idle_do_not_connect_or_change_profiles() {
-        let mut power = PowerProfile::default();
-        power.update(false, true);
-        assert_eq!(power.status(false)["state"], "disabled");
-        power.update(true, false);
-        assert_eq!(power.status(true)["state"], "idle");
-        assert!(power.pollfd().is_none());
-        assert!(!crate::config::FileConfig::default().performance_while_running);
-        let cfg: crate::config::FileConfig =
-            toml::from_str("performance_while_running = true").unwrap();
-        assert!(
-            crate::config::Config::resolve(cfg, 2, 8 << 30)
-                .unwrap()
-                .performance_while_running
-        );
-    }
-}
-
 impl PowerProfile {
     /// A burst starts only when a job can actually launch; queued jobs alone
     /// never change the profile. Keep the hold until cleanup releases resources.
@@ -247,5 +224,28 @@ mod linux {
             }
             Ok(false)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_and_idle_do_not_connect_or_change_profiles() {
+        let mut power = PowerProfile::default();
+        power.update(false, true);
+        assert_eq!(power.status(false)["state"], "disabled");
+        power.update(true, false);
+        assert_eq!(power.status(true)["state"], "idle");
+        assert!(power.pollfd().is_none());
+        assert!(!crate::config::FileConfig::default().performance_while_running);
+        let cfg: crate::config::FileConfig =
+            toml::from_str("performance_while_running = true").unwrap();
+        assert!(
+            crate::config::Config::resolve(cfg, 2, 8 << 30)
+                .unwrap()
+                .performance_while_running
+        );
     }
 }
