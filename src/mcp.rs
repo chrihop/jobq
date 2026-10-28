@@ -31,7 +31,7 @@ use tokio::{
 // Keep the root a plain object for clients that reject schema composition.
 // Adapter::submission enforces the argv/shell exclusivity and nonempty command.
 struct SubmitParams {
-    /// Absolute working directory for this job, independent of the adapter's directory.
+    /// Absolute working directory on the execution host, independent of the adapter's directory.
     cwd: String,
     /// Stable identity (1..256 bytes). Reuse exactly this token after an uncertain response.
     submission_token: String,
@@ -187,14 +187,14 @@ fn terminal(value: &Value) -> bool {
 }
 
 #[derive(Clone)]
-struct Adapter {
+pub(crate) struct Adapter {
     socket: PathBuf,
     env: Arc<BTreeMap<String, String>>,
     umask: u32,
     tool_router: ToolRouter<Self>,
 }
 impl Adapter {
-    fn new(socket: PathBuf, env: BTreeMap<String, String>, umask: u32) -> Self {
+    pub(crate) fn new(socket: PathBuf, env: BTreeMap<String, String>, umask: u32) -> Self {
         Self {
             socket,
             env: Arc::new(env),
@@ -543,7 +543,7 @@ impl ServerHandler for Adapter {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("jobq", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Submit heavy commands with jobq_submit, then jobq_wait with block=true to await completion in one call, or use bounded waits/status when preferred. Use jobq_wait_many with mode=any or all for a set; continue any waits with pending_ids. Read output with jobq_logs. Client tool timeouts still apply to blocking waits. Reuse submission_token on retries. All agents share one user's queues and job access. Environment comes from this adapter's launcher, with server and submission overrides; it is not the current terminal environment. Supply an absolute cwd. Accepted jobs survive MCP disconnects. Check maintenance.admission_open and dispatch_open in jobq_queues. On maintenance rejection retain the token and retry after admission reopens; do not bypass maintenance through direct execution, CLI submission or emergency priority. Do not resume or restart the shared daemon merely to unblock work. Reload, drain and resume are CLI operator actions requiring task authorization.")
+            .with_instructions("Submit heavy commands with jobq_submit, then jobq_wait with block=true to await completion in one call, or use bounded waits/status when preferred. Use jobq_wait_many with mode=any or all for a set; continue any waits with pending_ids. Read output with jobq_logs. Client tool timeouts still apply to blocking waits. Reuse submission_token on retries. All agents share one user's queues and job access. Environment comes from this adapter's launcher, with server and submission overrides; it is not the current terminal environment. Supply an absolute cwd on the execution host. With remote HTTP, commands and files belong to that host, not the agent computer; no automatic file or environment transfer occurs. Accepted jobs survive MCP disconnects. Check maintenance.admission_open and dispatch_open in jobq_queues. On maintenance rejection retain the token and retry after admission reopens; do not bypass maintenance through direct execution, CLI submission or emergency priority. Do not resume or restart the shared daemon merely to unblock work. Reload, drain and resume are CLI operator actions requiring task authorization.")
     }
 }
 

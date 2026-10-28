@@ -91,8 +91,25 @@ enum Commands {
     Resume,
     /// Show persistent maintenance mode and restart readiness.
     Maintenance,
-    /// Expose agent tools over MCP stdio; connects to the existing daemon.
-    Mcp,
+    /// Expose agent tools over MCP stdio (default) or authenticated Streamable HTTP.
+    Mcp {
+        #[arg(long)]
+        http: bool,
+        #[arg(long, requires = "http")]
+        listen: Option<std::net::SocketAddr>,
+        /// Owner-only file containing random bearer tokens, one per line.
+        #[arg(long, requires = "http", required_if_eq("http", "true"))]
+        token_file: Option<PathBuf>,
+        /// Exact Host authority allowed by a reverse proxy; repeat for multiple hosts.
+        #[arg(long, requires = "http")]
+        allowed_host: Vec<String>,
+        /// Trusted Origin with explicit scheme and port. Default rejects every Origin.
+        #[arg(long, requires = "http")]
+        allowed_origin: Vec<String>,
+        /// Acknowledge plaintext HTTP exposure when binding a non-loopback interface.
+        #[arg(long, requires = "http")]
+        allow_remote_http: bool,
+    },
     #[command(name = "__supervise", hide = true)]
     Supervise {
         dir: PathBuf,
@@ -217,12 +234,33 @@ fn run(cli: Cli, inherited_umask: u32) -> Result<i32> {
             jobq::supervisor::exec_job(&dir)?;
             return Ok(0);
         }
-        Commands::Mcp => {
+        Commands::Mcp {
+            http,
+            listen,
+            token_file,
+            allowed_host,
+            allowed_origin,
+            allow_remote_http,
+        } => {
             ensure!(
                 !cli.json,
                 "--json cannot be used with mcp; stdout is reserved for MCP"
             );
-            jobq::mcp::run(socket, inherited_umask)?;
+            if http {
+                jobq::mcp_http::run(
+                    socket,
+                    inherited_umask,
+                    jobq::mcp_http::Options {
+                        listen: listen.unwrap_or_else(|| "127.0.0.1:8765".parse().unwrap()),
+                        token_file: token_file.context("--token-file is required with --http")?,
+                        allowed_hosts: allowed_host,
+                        allowed_origins: allowed_origin,
+                        allow_remote_http,
+                    },
+                )?;
+            } else {
+                jobq::mcp::run(socket, inherited_umask)?;
+            }
             return Ok(0);
         }
         Commands::Submit {
@@ -394,7 +432,7 @@ fn main() {
     let inherited_umask = unsafe { libc::umask(0o077) } as u32;
     let cli = Cli::parse();
     // Even startup failures must not put ordinary JSON on the MCP transport.
-    let json = cli.json && !matches!(cli.command, Commands::Mcp);
+    let json = cli.json && !matches!(cli.command, Commands::Mcp { .. });
     match run(cli, inherited_umask) {
         Ok(code) => std::process::exit(code),
         Err(e) => {

@@ -274,6 +274,93 @@ Client configuration pattern (adapt the enclosing syntax to your application):
 ```
 
 For a custom socket use `"args": ["--socket", "/absolute/private/socket", "mcp"]`.
+### Remote agents over authenticated Streamable HTTP
+
+`jobq mcp` remains stdio by default. On the **execution host**, start the normal
+Unix-socket daemon, then a separate authenticated HTTP adapter under the same
+account. The HTTP adapter forwards to that daemon; it does not create another
+scheduler or move commands to the agent computer.
+
+Create a private token file on the execution host (do not overwrite existing
+credentials when adding another client):
+
+```sh
+install -d -m 700 ~/.config/jobq
+(umask 077; python3 -c 'import secrets; print(secrets.token_urlsafe(32))' \
+  > ~/.config/jobq/mcp.tokens)
+jobq mcp --http --listen 127.0.0.1:8765 \
+  --token-file ~/.config/jobq/mcp.tokens
+```
+
+The endpoint is `/mcp`. Configure the agent's Streamable HTTP MCP client with
+its URL and an `Authorization: Bearer <token>` header, obtaining the token through
+a secure channel. Keep the credential in the client's secret store or protected
+configuration, not in prompts, URLs, command arguments, or source control. The
+file accepts 1–64 independent tokens, one per line; generate each randomly.
+All tokens currently grant the daemon account's **full shared job access**:
+submit arbitrary commands, read jobs/logs, and cancel jobs. Treat a token as
+remote command-execution access. This is not a per-user sandbox or multi-tenant
+ACL system, and submission tokens are retry IDs, not authentication credentials.
+
+For encrypted remote access without opening an HTTP port to the network, run
+this on the **agent computer**, keeping the tunnel alive:
+
+```sh
+ssh -N -L 8765:127.0.0.1:8765 worker-host
+```
+
+Point the agent to `http://127.0.0.1:8765/mcp`; authentication is still required.
+Alternatively, terminate HTTPS in a trusted reverse proxy on the execution host
+and forward `/mcp` to the loopback listener. Preserve `Authorization`, allow long
+responses/streaming for blocking waits, and set `--allowed-host jobs.example.com`
+if the proxy preserves that Host header. Do not trust arbitrary forwarded-host
+headers or log Authorization. There is no built-in TLS or OAuth discovery/token
+issuer; authentication verifies preconfigured opaque bearer tokens, not JWTs.
+
+Non-loopback plaintext binding requires explicit `--allow-remote-http`; use it
+only behind an appropriate encrypted/private transport and firewall. It is not
+a substitute for TLS. The default listener is `127.0.0.1:8765`. Host validation
+remains enabled, and requests with an Origin are rejected unless explicitly
+allowed with `--allowed-origin https://trusted.example:443` (include the port).
+This Origin allowlist validates requests; it does not enable browser CORS.
+
+Every request, including initialize, discovery, GET and DELETE, passes bearer
+verification. Tokens are held as SHA-256 digests and compared in constant time.
+The token file must be a regular, owner-only file owned by the adapter's user;
+symlinks, empty/invalid files and oversized files are rejected. HTTP request
+bodies are capped at 1MiB. The transport uses stateless request handling with
+JSON responses where possible, avoiding shared session IDs across credentials;
+GET event streams/session replay are not provided. Standard HTTP MCP clients
+should accept the allowed 405 response to an optional GET event stream.
+
+To rotate/revoke credentials, atomically replace the token file with a valid
+owner-only replacement and send **SIGHUP to the HTTP adapter PID**. All new
+requests use the replacement tokens. An invalid/unreadable reload fails closed,
+rejecting all new requests until a valid reload. Already-authorized in-flight
+requests and accepted jobs are not cancelled by revocation, disconnection, or
+adapter shutdown; use `jobq_cancel` or the local CLI for cancellation. Never send
+that signal to the scheduler daemon as a substitute for `jobq reload`.
+
+The adapter captures its own execution-host environment at startup. Supply
+`cwd` as an absolute path **on the execution host**, stage source/data there,
+and use executables installed there. Explicit `env` overrides remain available.
+No automatic file sync or capture of the remote agent's local environment occurs.
+Use the same submission token after an uncertain network response. The workflow
+is unchanged: `jobq_submit` → `jobq_wait`/`jobq_wait_many` → `jobq_logs`.
+Initialization and tool discovery work while the scheduler is offline; tool
+calls report the connection error. No HTTP listener or runtime starts for normal
+server/CLI/stdio usage.
+
+Reproduce the isolated HTTP tests with
+`python3 tests/http_mcp.py target/release/jobq`. They cover authentication,
+Host/Origin rejection, request limits, execution context, idempotency, all tools,
+concurrent waits/cancellation, token rotation, failed reload, daemon restart,
+and adapter exit without job loss. A native two-computer check also verified an
+agent-side HTTP client submitting to a Linux amd64 worker through an SSH tunnel,
+then receiving completion and logs from that execution host.
+
+### Stdio lifecycle
+
 The client owns the adapter process and stdin/stdout pipes. Stdout carries only
 MCP messages; diagnostics go to stderr. `--json` is rejected with `mcp`. Use a
 compatible daemon and adapter. If upgrading a daemon is necessary, drain it
@@ -740,7 +827,8 @@ process names, and `wait4` maximum-RSS unit conversion.
 
 ### Linux amd64 measurements
 
-Measured on 2026-10-28 with Linux 7.0.0, glibc 2.39, 24 logical CPUs and
+Measured before the optional power-profile/HTTP additions on 2026-10-28 with
+Linux 7.0.0, glibc 2.39, 24 logical CPUs and
 29.02GiB host RAM, using a release build. The daemon benchmark uses 100ms
 monitoring; the MCP fixture uses 20ms monitoring, one runner and a 192MiB budget.
 Both use synthetic jobs. The optimized daemon measurements below use 15-second

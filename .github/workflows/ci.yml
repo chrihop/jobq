@@ -35,6 +35,7 @@ jobs:
         run: |
           python3 tests/smoke.py target/release/jobq
           python3 tests/mcp.py target/release/jobq
+          python3 tests/http_mcp.py target/release/jobq
           python3 tests/process_tree.py target/release/jobq
           python3 tests/maintenance.py target/release/jobq
           python3 tests/legacy_gate.py

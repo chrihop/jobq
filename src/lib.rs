@@ -3,6 +3,7 @@
 pub mod client;
 pub mod config;
 pub mod mcp;
+pub mod mcp_http;
 pub mod model;
 pub mod native;
 pub mod power;
